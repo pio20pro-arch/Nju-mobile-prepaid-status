@@ -1,5 +1,4 @@
-Inspiracja projektem: https://github.com/mrachuta/ns/tree/master
-
+Inspiracja projektem: https://github.com/mrachuta/ns
 ## Nju mobile prepaid status
 Aplikacja pokazuje w systraju ile GB pozostało na koncie.
 Obsługuje wiele kont jednocześnie
