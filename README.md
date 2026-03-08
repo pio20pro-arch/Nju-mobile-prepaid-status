@@ -1,8 +1,25 @@
-Inspiracja projektem: https://github.com/mrachuta/ns
-## Nju mobile prepaid status
-Aplikacja pokazuje w systraju ile GB pozostało na koncie.
-Obsługuje wiele kont jednocześnie
-Obsługuje prepaid, internet mobilny (innych nie testowałem ale proszę zgłaszać błedy wraz z logami wtedy dodam obsługę innych niedziałających opcji)
-Obsłyge subskrybcji znajdziesz tutaj https://github.com/pio20pro-arch/NJU-mobile-data-usage
+# Nju Mobile Prepaid Status
 
-<img width="622" height="512" alt="image" src="https://github.com/user-attachments/assets/1cd70ff7-4c89-4482-abed-ec27d01a4a39" />
+Inspiracja projektem:  
+https://github.com/mrachuta/ns
+
+## Opis
+
+Aplikacja pokazuje w **system trayu** ile GB danych pozostało na koncie.
+
+## Funkcje
+
+- Obsługa wielu kont jednocześnie
+- Obsługa:
+  - prepaid
+  - internet mobilny  
+- Innych typów kont nie testowałem – jeśli coś nie działa, zgłoś **issue** wraz z logami, wtedy dodam obsługę.
+
+## Subskrypcja
+
+Obsługę subskrypcji znajdziesz tutaj:  
+https://github.com/pio20pro-arch/NJU-mobile-data-usage
+
+## Screenshot
+
+![Nju Mobile Prepaid Status](https://github.com/user-attachments/assets/1cd70ff7-4c89-4482-abed-ec27d01a4a39)
