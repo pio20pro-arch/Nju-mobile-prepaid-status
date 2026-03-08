@@ -22,4 +22,5 @@ https://github.com/pio20pro-arch/NJU-mobile-data-usage
 
 ## Screenshot
 
-![Nju Mobile Prepaid Status](https://github.com/user-attachments/assets/1cd70ff7-4c89-4482-abed-ec27d01a4a39)
+<img width="622" height="512" alt="image" src="https://github.com/user-attachments/assets/87ba5e89-3c87-41b6-bee2-be9e91e59792" />
+
