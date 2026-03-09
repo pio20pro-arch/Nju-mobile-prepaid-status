@@ -1,4 +1,4 @@
-﻿using NjuPrepaidStatus.Models;
+using NjuPrepaidStatus.Models;
 using NjuPrepaidStatus.Services;
 using System.Security.Authentication;
 using System.Security.Cryptography;
@@ -33,6 +33,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly Dictionary<string, NumberTrayIconState> _numberTrayIcons = new(StringComparer.Ordinal);
     private readonly Dictionary<string, bool> _perNumberTrayIconEnabled = new(StringComparer.Ordinal);
     private Dictionary<string, AccountUsage> _lastUsageByPhone = new(StringComparer.Ordinal);
+    private readonly Icon _defaultStatusIcon;
     private Icon? _mainCustomIcon;
     private string? _lastParserDataSignature;
     private AppConfig _config;
@@ -50,6 +51,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _logger = logger;
         _configService = configService;
         _uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+        _defaultStatusIcon = LoadDefaultTrayIcon();
         _config = _configService.Load();
         _logger.SetHideSecretsInLogs(_config.HideSecretsInLogs);
         _perNumberTrayIconEnabled.Clear();
@@ -77,7 +79,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         _notifyIcon = new NotifyIcon
         {
-            Icon = SystemIcons.Information,
+            Icon = _defaultStatusIcon,
             Visible = true,
             ContextMenuStrip = _contextMenu,
             Text = "Nju Web Usage: brak kont"
@@ -98,6 +100,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             _cts.Cancel();
             _notifyIcon.Visible = false;
             _notifyIcon.Dispose();
+            _defaultStatusIcon.Dispose();
             _mainCustomIcon?.Dispose();
             _cts.Dispose();
             _refreshLock.Dispose();
@@ -184,13 +187,20 @@ public sealed class TrayApplicationContext : ApplicationContext
             var tasks = accounts.Select(account => FetchUsageForAccountAsync(account, _cts.Token)).ToArray();
             var results = await Task.WhenAll(tasks);
 
-            var usage = results.Where(r => r is not null).Select(r => r!).ToList();
-            if (usage.Count == 0)
+            var freshUsage = results.Where(r => r is not null).Select(r => r!).ToList();
+            if (freshUsage.Count == 0)
             {
+                if (_lastUsageByPhone.Count > 0)
+                {
+                    _logger.Error("All account fetches failed. Keeping last successful tray state.");
+                    return;
+                }
+
                 SetWarningState("Brak danych. Sprawdz loginy/hasla.");
                 return;
             }
 
+            var usage = MergeWithLastSuccessfulUsage(freshUsage);
             var currentSignature = CreateUsageSignature(usage);
             if (string.Equals(_lastParserDataSignature, currentSignature, StringComparison.Ordinal))
             {
@@ -213,6 +223,20 @@ public sealed class TrayApplicationContext : ApplicationContext
         {
             _refreshLock.Release();
         }
+    }
+
+    private List<AccountUsage> MergeWithLastSuccessfulUsage(IReadOnlyCollection<AccountUsage> freshUsage)
+    {
+        var merged = freshUsage.ToDictionary(x => x.PhoneNumber, StringComparer.Ordinal);
+        foreach (var phone in _accounts.Keys)
+        {
+            if (!merged.ContainsKey(phone) && _lastUsageByPhone.TryGetValue(phone, out var lastKnown))
+            {
+                merged[phone] = lastKnown;
+            }
+        }
+
+        return merged.Values.ToList();
     }
 
     private async Task<AccountUsage?> FetchUsageForAccountAsync(Credentials credentials, CancellationToken cancellationToken)
@@ -273,7 +297,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         {
             _mainCustomIcon?.Dispose();
             _mainCustomIcon = null;
-            _notifyIcon.Icon = SystemIcons.Information;
+            _notifyIcon.Icon = _defaultStatusIcon;
             _notifyIcon.Text = "Nju Web Usage: brak kont";
             RebuildNumbersMenuItems([]);
             ClearPerNumberTrayIcons();
@@ -578,6 +602,25 @@ public sealed class TrayApplicationContext : ApplicationContext
         return text.Length <= maxLength ? text : text[..(maxLength - 1)];
     }
 
+    private static Icon LoadDefaultTrayIcon()
+    {
+        try
+        {
+            var iconPath = Path.Combine(AppContext.BaseDirectory, "wifi.ico");
+            if (File.Exists(iconPath))
+            {
+                using var fromFile = new Icon(iconPath);
+                return (Icon)fromFile.Clone();
+            }
+        }
+        catch
+        {
+            // fallback below
+        }
+
+        return (Icon)SystemIcons.Information.Clone();
+    }
+
     private void ShowInfo(string title, string text)
     {
         _uiContext.Post(_ =>
@@ -663,3 +706,4 @@ public sealed class TrayApplicationContext : ApplicationContext
         public Icon? Icon { get; set; }
     }
 }
+
