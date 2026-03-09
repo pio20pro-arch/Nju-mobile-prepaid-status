@@ -1,20 +1,13 @@
 ﻿using NjuPrepaidStatus.Models;
 using NjuPrepaidStatus.Services;
 using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace NjuPrepaidStatus.UI;
 
 public sealed class TrayApplicationContext : ApplicationContext
 {
-    private const int MinRefreshIntervalSeconds = 15;
-    private const int FetchRetryCount = 60;
-    private static readonly TimeSpan FetchRetryDelay = TimeSpan.FromSeconds(5);
-
-    private readonly CredentialStore _credentialStore;
-    private readonly NjuHtmlParser _parser;
-    private readonly AutostartService _autostartService;
-    private readonly FileLogger _logger;
-    private readonly ConfigService _configService;
     private readonly NotifyIcon _notifyIcon;
     private readonly ContextMenuStrip _contextMenu;
     private readonly ToolStripMenuItem _addAccountMenuItem;
@@ -23,6 +16,14 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _hideSecretsInLogsMenuItem;
     private readonly ToolStripMenuItem _exitMenuItem;
     private readonly ToolStripSeparator _numbersSeparator;
+    
+    private readonly CredentialStore _credentialStore;
+    private readonly NjuHtmlParser _parser;
+    private readonly AutostartService _autostartService;
+    private readonly FileLogger _logger;
+    private readonly ConfigService _configService;
+
+   
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private readonly CancellationTokenSource _cts = new();
     private readonly SynchronizationContext _uiContext;
@@ -33,6 +34,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly Dictionary<string, bool> _perNumberTrayIconEnabled = new(StringComparer.Ordinal);
     private Dictionary<string, AccountUsage> _lastUsageByPhone = new(StringComparer.Ordinal);
     private Icon? _mainCustomIcon;
+    private string? _lastParserDataSignature;
     private AppConfig _config;
 
     public TrayApplicationContext(
@@ -189,6 +191,13 @@ public sealed class TrayApplicationContext : ApplicationContext
                 return;
             }
 
+            var currentSignature = CreateUsageSignature(usage);
+            if (string.Equals(_lastParserDataSignature, currentSignature, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _lastParserDataSignature = currentSignature;
             UpdateTrayUi(usage);
         }
         catch (OperationCanceledException)
@@ -208,44 +217,33 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private async Task<AccountUsage?> FetchUsageForAccountAsync(Credentials credentials, CancellationToken cancellationToken)
     {
-        for (var attempt = 1; attempt <= FetchRetryCount; attempt++)
+        try
         {
-            try
-            {
-                using var client = new NjuWebClient(_logger);
-                var html = await client.GetBalanceHtmlAsync(credentials, cancellationToken);
-                var balance = _parser.ParseBalanceStatus(html);
-                var normalizedPhone = NormalizePhoneNumber(credentials.Username);
-                return new AccountUsage(
-                    normalizedPhone,
-                    balance.DomesticUsage.AvailableGb * 1024m,
-                    balance.DomesticUsage.AvailableGb,
-                    balance.RoamingUsage.AvailableGb * 1024m,
-                    balance.RoamingUsage.AvailableGb);
-            }
-            catch (AuthenticationException ex)
-            {
-                _logger.Error($"Fetch usage auth failed for {credentials.Username}: {ex.Message}");
-                return null;
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex) when (attempt < FetchRetryCount)
-            {
-                _logger.Error(
-                    $"Fetch usage failed for {credentials.Username}: {ex.Message}. Retry {attempt}/{FetchRetryCount} in {FetchRetryDelay.TotalSeconds:0}s.");
-                await Task.Delay(FetchRetryDelay, cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                _logger.Error($"Fetch usage failed for {credentials.Username} after {FetchRetryCount} attempts: {ex.Message}");
-                return null;
-            }
+            using var client = new NjuWebClient(_logger);
+            var html = await client.GetBalanceHtmlAsync(credentials, cancellationToken);
+            var balance = _parser.ParseBalanceStatus(html);
+            var normalizedPhone = NormalizePhoneNumber(credentials.Username);
+            return new AccountUsage(
+                normalizedPhone,
+                balance.DomesticUsage.AvailableGb * 1024m,
+                balance.DomesticUsage.AvailableGb,
+                balance.RoamingUsage.AvailableGb * 1024m,
+                balance.RoamingUsage.AvailableGb);
         }
-
-        return null;
+        catch (AuthenticationException ex)
+        {
+            _logger.Error($"Fetch usage auth failed for {credentials.Username}: {ex.Message}");
+            return null;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Fetch usage failed for {credentials.Username}: {ex.Message}");
+            return null;
+        }
     }
 
     private void UpdateTrayUi(IReadOnlyCollection<AccountUsage> usage)
@@ -404,8 +402,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        state.NotifyIcon.Visible = false;
-        state.NotifyIcon.Dispose();
+        state.TrayIcon.Dispose();
         state.Icon?.Dispose();
         _numberTrayIcons.Remove(key);
     }
@@ -451,18 +448,22 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         if (!_numberTrayIcons.TryGetValue(usageKey, out var state))
         {
-            var icon = new NotifyIcon
-            {
-                Visible = true
-            };
-            state = new NumberTrayIconState(icon);
+            var guid = CreateDeterministicGuid(usageKey);
+            state = new NumberTrayIconState(guid, new NativeTrayIcon(guid));
             _numberTrayIcons[usageKey] = state;
         }
 
         state.Icon?.Dispose();
         state.Icon = TrayIconFactory.CreateNumberIcon(FormatIconTextFromGb(remainingGb));
-        state.NotifyIcon.Icon = state.Icon;
-        state.NotifyIcon.Text = TruncateTooltip(tooltip);
+        try
+        {
+            state.TrayIcon.Show(state.Icon, TruncateTooltip(tooltip));
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Per-number tray icon update failed for {usageKey}: {ex.Message}");
+            RemovePerNumberIcon(usageKey);
+        }
     }
 
     private void SavePersistedAccounts()
@@ -498,7 +499,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             {
                 try
                 {
-                    var delaySeconds = Math.Max(MinRefreshIntervalSeconds, _config.RefreshIntervalSeconds);
+                    var delaySeconds = _config.RefreshIntervalSeconds > 0 ? _config.RefreshIntervalSeconds : 60;
                     await Task.Delay(TimeSpan.FromSeconds(delaySeconds), _cts.Token);
 
                     if (_accounts.Count > 0)
@@ -607,6 +608,13 @@ public sealed class TrayApplicationContext : ApplicationContext
         return $"{phoneNumber}|{usageKind}";
     }
 
+    private static Guid CreateDeterministicGuid(string usageKey)
+    {
+        var bytes = Encoding.UTF8.GetBytes($"NjuPrepaidStatus:{usageKey}");
+        var hash = MD5.HashData(bytes);
+        return new Guid(hash);
+    }
+
     private decimal ComputeSelectedTotalMb(IEnumerable<AccountUsage> usage)
     {
         decimal totalMb = 0m;
@@ -626,6 +634,15 @@ public sealed class TrayApplicationContext : ApplicationContext
         return totalMb;
     }
 
+    private static string CreateUsageSignature(IEnumerable<AccountUsage> usage)
+    {
+        return string.Join(
+            "|",
+            usage
+                .OrderBy(x => x.PhoneNumber, StringComparer.Ordinal)
+                .Select(x => $"{x.PhoneNumber}:{x.RemainingMb:0.######}:{x.RoamingMb:0.######}"));
+    }
+
     private enum UsageKind
     {
         Domestic,
@@ -639,9 +656,10 @@ public sealed class TrayApplicationContext : ApplicationContext
         decimal RoamingMb,
         decimal RoamingGb);
 
-    private sealed class NumberTrayIconState(NotifyIcon notifyIcon)
+    private sealed class NumberTrayIconState(Guid guid, NativeTrayIcon trayIcon)
     {
-        public NotifyIcon NotifyIcon { get; } = notifyIcon;
+        public Guid Guid { get; } = guid;
+        public NativeTrayIcon TrayIcon { get; } = trayIcon;
         public Icon? Icon { get; set; }
     }
 }
